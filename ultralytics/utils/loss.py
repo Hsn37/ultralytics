@@ -228,7 +228,7 @@ class v8DetectionLoss:
 
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
-        # dfl_conf = pred_distri.view(batch_size, -1, 4, self.reg_max).detach().softmax(-1)
+                # dfl_conf = pred_distri.view(batch_size, -1, 4, self.reg_max).detach().softmax(-1)
         # dfl_conf = (dfl_conf.amax(-1).mean(-1) + dfl_conf.amax(-1).amin(-1)) / 2
 
         _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
@@ -240,12 +240,17 @@ class v8DetectionLoss:
             gt_bboxes,
             mask_gt,
         )
-
+        
         target_scores_sum = max(target_scores.sum(), 1)
 
         # Cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        annotated_mask = (target_scores > 0).float()
+
+        # Adjust the classification loss to only consider annotated regions
+        loss_cls = self.bce(pred_scores, target_scores) * annotated_mask
+        loss[1] = loss_cls.sum() / (annotated_mask.sum() + 1e-9)
+        # loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # Bbox loss
         if fg_mask.sum():
@@ -253,6 +258,22 @@ class v8DetectionLoss:
             loss[0], loss[2] = self.bbox_loss(
                 pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
             )
+            
+            bbox_loss, dfl_loss = self.bbox_loss(
+                pred_distri,
+                pred_bboxes,
+                anchor_points,
+                target_bboxes,
+                target_scores,
+                target_scores_sum,
+                fg_mask,
+            )
+            
+            # Adjust the bbox loss to only consider annotated regions
+            bbox_loss = (bbox_loss * annotated_mask).sum() / (annotated_mask.sum() + 1e-9)
+
+            loss[0] = bbox_loss
+            loss[2] = dfl_loss
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
